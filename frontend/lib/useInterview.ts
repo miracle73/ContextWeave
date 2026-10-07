@@ -1,0 +1,141 @@
+"use client";
+
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { WS_URL } from "./api";
+import { initialState, reduce } from "./interviewState";
+
+export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
+export type MicState = "idle" | "requesting" | "listening" | "denied" | "error" | "unsupported";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SpeechRec = any;
+
+/** WebSocket session with auto-reconnect, microphone capture and two replaceable STT paths:
+ *  - "deepgram": raw audio chunks are streamed to the backend (key stays server-side)
+ *  - "browser":  Web Speech API produces interim/final transcripts locally, sent as text */
+export function useInterview(chatId: string) {
+  const [state, dispatch] = useReducer(reduce, initialState);
+  const [conn, setConn] = useState<ConnState>("connecting");
+  const [mic, setMic] = useState<MicState>("idle");
+  const [micError, setMicError] = useState<string | null>(null);
+  const [sttProvider, setSttProvider] = useState("browser");
+  const ws = useRef<WebSocket | null>(null);
+  const retry = useRef(0);
+  const closedByUs = useRef(false);
+  const media = useRef<{ stream?: MediaStream; rec?: MediaRecorder; speech?: SpeechRec; silence?: ReturnType<typeof setTimeout> }>({});
+  const listening = useRef(false);
+
+  const send = useCallback((msg: object | Blob) => {
+    const s = ws.current;
+    if (s?.readyState !== WebSocket.OPEN) return false;
+    s.send(msg instanceof Blob ? msg : JSON.stringify(msg));
+    return true;
+  }, []);
+
+  const stopMic = useCallback((notify = true) => {
+    listening.current = false;
+    const m = media.current;
+    if (m.silence) clearTimeout(m.silence);
+    try { m.rec?.state !== "inactive" && m.rec?.stop(); } catch { /* already stopped */ }
+    try { m.speech?.stop(); } catch { /* already stopped */ }
+    m.stream?.getTracks().forEach((t) => t.stop());
+    media.current = {};
+    setMic((s) => (s === "listening" || s === "requesting" ? "idle" : s));
+    if (notify) send({ type: "stop_audio" });
+  }, [send]);
+
+  useEffect(() => {
+    closedByUs.current = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const connect = () => {
+      setConn(retry.current ? "reconnecting" : "connecting");
+      const s = new WebSocket(`${WS_URL}/ws/${chatId}`);
+      ws.current = s;
+      s.onopen = () => { retry.current = 0; setConn("open"); };
+      s.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === "ready") setSttProvider(m.stt_provider);
+        if (m.type === "stt_status" && m.state === "error") { setMicError(m.message); stopMic(false); setMic("error"); }
+        dispatch(m);
+      };
+      s.onclose = (e) => {
+        if (listening.current) stopMic(false); // audio container headers are lost across reconnects
+        if (closedByUs.current || e.code === 4404) { setConn("closed"); return; }
+        retry.current += 1;
+        setConn("reconnecting");
+        timer = setTimeout(connect, Math.min(10_000, 500 * 2 ** retry.current));
+      };
+    };
+    connect();
+    const ping = setInterval(() => send({ type: "ping" }), 25_000);
+    return () => {
+      closedByUs.current = true;
+      clearTimeout(timer);
+      clearInterval(ping);
+      stopMic(false);
+      ws.current?.close();
+    };
+  }, [chatId, send, stopMic]);
+
+  const startMic = useCallback(async () => {
+    setMicError(null);
+    if (!navigator.mediaDevices?.getUserMedia) { setMic("unsupported"); setMicError("Microphone not available in this browser."); return; }
+    setMic("requesting");
+    try {
+      if (sttProvider === "browser") {
+        const SR = (window as SpeechRec).SpeechRecognition ?? (window as SpeechRec).webkitSpeechRecognition;
+        if (!SR) { setMic("unsupported"); setMicError("Browser speech recognition unsupported (use Chrome/Edge) or configure Deepgram."); return; }
+        // Ask permission explicitly so denial is reported clearly.
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        const rec = new SR();
+        rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
+        const armSilence = () => {
+          if (media.current.silence) clearTimeout(media.current.silence);
+          media.current.silence = setTimeout(() => send({ type: "utterance_end" }), 1400);
+        };
+        rec.onresult = (ev: SpeechRec) => {
+          let interim = "";
+          for (let i = ev.resultIndex; i < ev.results.length; i++) {
+            const r = ev.results[i];
+            if (r.isFinal) send({ type: "transcript", text: r[0].transcript, is_final: true });
+            else interim += r[0].transcript;
+          }
+          if (interim) send({ type: "transcript", text: interim, is_final: false });
+          armSilence();
+        };
+        rec.onerror = (e: SpeechRec) => {
+          if (e.error === "not-allowed") { setMic("denied"); setMicError("Microphone permission denied."); listening.current = false; }
+          else if (e.error !== "no-speech" && e.error !== "aborted") setMicError(`Speech recognition error: ${e.error}`);
+        };
+        rec.onend = () => { if (listening.current) try { rec.start(); } catch { /* restarting */ } };
+        media.current.speech = rec;
+        listening.current = true;
+        rec.start();
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        const mime = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t));
+        const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+        if (!send({ type: "start_audio" })) throw new Error("Not connected to the server");
+        rec.ondataavailable = (e) => { if (e.data.size) send(e.data); };
+        media.current = { stream, rec };
+        listening.current = true;
+        rec.start(250);
+      }
+      setMic("listening");
+    } catch (e) {
+      const err = e as DOMException;
+      listening.current = false;
+      if (err.name === "NotAllowedError" || err.name === "SecurityError") { setMic("denied"); setMicError("Microphone permission denied. Allow it in your browser's site settings."); }
+      else if (err.name === "NotFoundError") { setMic("error"); setMicError("No microphone found."); }
+      else { setMic("error"); setMicError(err.message || "Could not start microphone."); }
+    }
+  }, [send, sttProvider]);
+
+  return {
+    state, conn, mic, micError, sttProvider, startMic, stopMic: () => stopMic(true),
+    ask: (text: string) => send({ type: "ask", text }),
+    cancel: () => send({ type: "cancel" }),
+    setSettings: (model: string, length: string) => send({ type: "settings", model, length }),
+  };
+}
