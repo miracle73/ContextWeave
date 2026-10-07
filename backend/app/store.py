@@ -84,26 +84,41 @@ class Database:
     """Stores each chat as one JSON record. Postgres (postgres://...) or SQLite (sqlite:///path)."""
 
     def __init__(self, url: str) -> None:
+        self.url = url
         self.pg = url.startswith(("postgres://", "postgresql://"))
+        self.ph = "%s" if self.pg else "?"
+        self._connect()
+        self._exec("CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+
+    def _connect(self) -> None:
         if self.pg:
             import psycopg
 
-            self.conn = psycopg.connect(url, autocommit=True)
+            self.conn = psycopg.connect(self.url, autocommit=True)
         else:
-            self.conn = sqlite3.connect(url.removeprefix("sqlite:///"), check_same_thread=False, isolation_level=None)
-        self.ph = "%s" if self.pg else "?"
-        self.conn.execute("CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+            self.conn = sqlite3.connect(self.url.removeprefix("sqlite:///"), check_same_thread=False,
+                                        isolation_level=None)
+
+    def _exec(self, sql: str, params: tuple = ()):
+        # Neon closes idle connections (scale-to-zero); reconnect once and retry.
+        try:
+            return self.conn.execute(sql, params)
+        except Exception:  # noqa: BLE001
+            if not self.pg:
+                raise
+            self._connect()
+            return self.conn.execute(sql, params)
 
     def load(self) -> list[dict]:
-        return [json.loads(row[0]) for row in self.conn.execute("SELECT data FROM chats").fetchall()]
+        return [json.loads(row[0]) for row in self._exec("SELECT data FROM chats").fetchall()]
 
     def save(self, chat: Chat) -> None:
-        self.conn.execute(f"INSERT INTO chats (id, data) VALUES ({self.ph}, {self.ph}) "
-                          "ON CONFLICT (id) DO UPDATE SET data = excluded.data",
-                          (chat.id, json.dumps(chat.to_record())))
+        self._exec(f"INSERT INTO chats (id, data) VALUES ({self.ph}, {self.ph}) "
+                   "ON CONFLICT (id) DO UPDATE SET data = excluded.data",
+                   (chat.id, json.dumps(chat.to_record())))
 
     def delete(self, chat_id: str) -> None:
-        self.conn.execute(f"DELETE FROM chats WHERE id = {self.ph}", (chat_id,))
+        self._exec(f"DELETE FROM chats WHERE id = {self.ph}", (chat_id,))
 
 
 class ChatStore:
