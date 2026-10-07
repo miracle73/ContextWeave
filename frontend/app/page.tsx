@@ -15,9 +15,20 @@ export default function Home() {
   const refreshChats = useCallback(() => api.chats().then(setChats), []);
   const refreshActive = useCallback((id: string) => api.chat(id).then(setActive).catch(() => setActive(null)), []);
 
+  // Retry until the backend answers (Render free instances can take ~30s to wake or redeploy).
   useEffect(() => {
-    Promise.all([api.config().then(setConfig), refreshChats()])
-      .catch(() => setError("Cannot reach the backend. Is it running on NEXT_PUBLIC_API_URL?"));
+    let timer: ReturnType<typeof setTimeout>;
+    let tries = 0;
+    const load = () =>
+      Promise.all([api.config().then(setConfig), refreshChats()])
+        .then(() => setError(null))
+        .catch(() => {
+          tries += 1;
+          if (tries > 2) setError("Waking up the server… retrying automatically.");
+          timer = setTimeout(load, 3000);
+        });
+    load();
+    return () => clearTimeout(timer);
   }, [refreshChats]);
 
   // Lobby socket: chats created or deleted on another device show up here immediately.
@@ -53,7 +64,7 @@ export default function Home() {
     <div className="flex min-h-screen flex-col md:flex-row">
       {menu && <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={() => setMenu(false)} />}
       <aside className={`${menu ? "translate-x-0" : "-translate-x-full"} fixed inset-y-0 left-0 z-40 w-72 overflow-y-auto border-r border-slate-200 bg-white p-4 transition-transform md:static md:w-64 md:translate-x-0`}>
-        <button onClick={newChat} disabled={!config} className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white disabled:opacity-40">+ New practice chat</button>
+        <button onClick={newChat} disabled={!config} className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white disabled:opacity-40">{config ? "+ New practice chat" : "Connecting to server…"}</button>
         <ul className="mt-4 space-y-1">
           {chats.map((c) => (
             <li key={c.id} className="group flex items-center">
