@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ContextPanel } from "@/components/ContextPanel";
 import { InterviewPanel } from "@/components/InterviewPanel";
-import { api, type AppConfig, type ChatDetail, type ChatSummary } from "@/lib/api";
+import { api, WS_URL, type AppConfig, type ChatDetail, type ChatSummary } from "@/lib/api";
 
 export default function Home() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -20,6 +20,27 @@ export default function Home() {
       .catch(() => setError("Cannot reach the backend. Is it running on NEXT_PUBLIC_API_URL?"));
   }, [refreshChats]);
 
+  // Lobby socket: chats created or deleted on another device show up here immediately.
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let timer: ReturnType<typeof setTimeout>;
+    let stopped = false;
+    const connect = () => {
+      ws = new WebSocket(`${WS_URL}/ws/lobby`);
+      ws.onmessage = (e) => {
+        if (JSON.parse(e.data).type !== "chats_changed") return;
+        api.chats().then((list) => {
+          setChats(list);
+          setActive((a) => (a && !list.some((c) => c.id === a.id) ? null : a));
+        });
+      };
+      ws.onopen = () => { refreshChats().catch(() => {}); };
+      ws.onclose = () => { if (!stopped) timer = setTimeout(connect, 3000); };
+    };
+    connect();
+    return () => { stopped = true; clearTimeout(timer); ws?.close(); };
+  }, [refreshChats]);
+
   const newChat = async () => {
     const title = prompt("Name this practice interview", "Mock interview");
     if (title === null) return;
@@ -30,7 +51,8 @@ export default function Home() {
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <aside className={`${menu ? "block" : "hidden"} border-b border-slate-200 bg-white p-4 md:block md:w-64 md:border-r md:border-b-0`}>
+      {menu && <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={() => setMenu(false)} />}
+      <aside className={`${menu ? "translate-x-0" : "-translate-x-full"} fixed inset-y-0 left-0 z-40 w-72 overflow-y-auto border-r border-slate-200 bg-white p-4 transition-transform md:static md:w-64 md:translate-x-0`}>
         <button onClick={newChat} disabled={!config} className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white disabled:opacity-40">+ New practice chat</button>
         <ul className="mt-4 space-y-1">
           {chats.map((c) => (
@@ -44,19 +66,24 @@ export default function Home() {
         </ul>
       </aside>
 
-      <main className="flex-1 p-4 md:p-6">
+      <main className="min-w-0 flex-1 p-3 sm:p-4 md:p-6">
         <header className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold">ContextWeave <span className="text-sm font-normal text-slate-400">mock interview coach</span></h1>
+            <h1 className="text-lg font-semibold sm:text-xl">ContextWeave <span className="hidden text-sm font-normal text-slate-400 sm:inline">mock interview coach</span></h1>
+            {active && <p className="truncate text-sm text-indigo-700 md:hidden">{active.title}</p>}
             <p className="text-xs text-slate-500">For consent-based practice only. Answers are grounded in your own CV and projects.</p>
           </div>
-          <button className="rounded-md border border-slate-300 px-3 py-1.5 text-sm md:hidden" onClick={() => setMenu((m) => !m)}>Chats</button>
+          <button className="shrink-0 rounded-md border border-slate-300 px-3 py-2 text-sm md:hidden" onClick={() => setMenu((m) => !m)}>☰ Chats</button>
         </header>
         {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         {config && active ? (
           <div className="grid gap-4 xl:grid-cols-[300px_1fr]">
-            <ContextPanel chatId={active.id} sources={active.sources} onChange={() => refreshActive(active.id)} />
-            <InterviewPanel key={active.id} chatId={active.id} config={config} onAnswered={() => {}} />
+            <div className="order-2 xl:order-1">
+              <ContextPanel chatId={active.id} sources={active.sources} onChange={() => refreshActive(active.id)} />
+            </div>
+            <div className="order-1 min-w-0 xl:order-2">
+              <InterviewPanel key={active.id} chatId={active.id} config={config} onSourcesChanged={() => refreshActive(active.id)} />
+            </div>
           </div>
         ) : (
           !error && (

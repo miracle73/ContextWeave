@@ -20,12 +20,16 @@ export type InterviewState = {
   history: Turn[];
   notice: string | null;
   error: string | null;
+  model: string;
+  length: string;
+  clientId: string | null;
+  micOwner: string | null;
 };
 
 export const initialState: InterviewState = {
   transcriptRevision: 0, committed: "", interim: "", genId: null, answerRevision: 0, provisional: false,
   question: "", kind: "", evidence: [], missingEvidence: false, answer: "", genStatus: "idle",
-  history: [], notice: null, error: null,
+  history: [], notice: null, error: null, model: "", length: "medium", clientId: null, micOwner: null,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,8 +37,22 @@ export type ServerMsg = { type: string; [k: string]: any };
 
 export function reduce(s: InterviewState, m: ServerMsg): InterviewState {
   switch (m.type) {
-    case "ready": // new server session: revisions restart
-      return { ...initialState, history: m.history ?? [] };
+    case "ready": { // snapshot of the chat's shared live session (other devices may already be mid-question)
+      const g = m.generation;
+      return {
+        ...initialState, history: m.history ?? [], transcriptRevision: m.revision ?? 0, committed: m.committed ?? "",
+        interim: m.interim ?? "", model: m.model ?? "", length: m.length ?? "medium", clientId: m.client_id ?? null,
+        micOwner: m.mic_owner ?? null,
+        ...(g ? {
+          genId: g.gen_id, answerRevision: g.revision, provisional: g.provisional, question: g.question, answer: g.text,
+          genStatus: g.done ? (g.provisional ? "provisional-done" : "done") : "streaming",
+        } : {}),
+      };
+    }
+    case "settings":
+      return { ...s, model: m.model, length: m.length };
+    case "mic":
+      return { ...s, micOwner: m.owner };
     case "transcript":
       if (m.revision <= s.transcriptRevision) return s;
       return { ...s, transcriptRevision: m.revision, committed: m.committed, interim: m.interim, notice: null };

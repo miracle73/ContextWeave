@@ -224,6 +224,14 @@ class InterviewSession:
         await self.send({"type": "answer_end", "gen_id": gen.id, "final": True, "text": gen.text,
                          "question": gen.question})
 
+    def snapshot(self) -> dict:
+        """Current live state, so a device joining mid-question sees the same thing as the others."""
+        g = self.active
+        return {"revision": self.revision, "committed": self.committed, "interim": self.interim,
+                "model": self.model, "length": self.length,
+                "generation": g and {"gen_id": g.id, "revision": g.revision, "provisional": g.provisional,
+                                     "question": g.question, "text": g.text, "done": g.done}}
+
     async def close(self) -> None:
         if self._debounce:
             self._debounce.cancel()

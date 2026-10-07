@@ -13,7 +13,7 @@ type SpeechRec = any;
 /** WebSocket session with auto-reconnect, microphone capture and two replaceable STT paths:
  *  - "deepgram": raw audio chunks are streamed to the backend (key stays server-side)
  *  - "browser":  Web Speech API produces interim/final transcripts locally, sent as text */
-export function useInterview(chatId: string) {
+export function useInterview(chatId: string, onSourcesChanged?: () => void) {
   const [state, dispatch] = useReducer(reduce, initialState);
   const [conn, setConn] = useState<ConnState>("connecting");
   const [mic, setMic] = useState<MicState>("idle");
@@ -24,6 +24,8 @@ export function useInterview(chatId: string) {
   const closedByUs = useRef(false);
   const media = useRef<{ stream?: MediaStream; rec?: MediaRecorder; speech?: SpeechRec; silence?: ReturnType<typeof setTimeout> }>({});
   const listening = useRef(false);
+  const onSources = useRef(onSourcesChanged);
+  onSources.current = onSourcesChanged;
 
   const send = useCallback((msg: object | Blob) => {
     const s = ws.current;
@@ -55,6 +57,7 @@ export function useInterview(chatId: string) {
       s.onmessage = (e) => {
         const m = JSON.parse(e.data);
         if (m.type === "ready") setSttProvider(m.stt_provider);
+        if (m.type === "sources_changed") onSources.current?.();
         if (m.type === "stt_status" && m.state === "error") { setMicError(m.message); stopMic(false); setMic("error"); }
         dispatch(m);
       };

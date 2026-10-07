@@ -33,6 +33,18 @@ describe("interview reducer", () => {
     expect(s.genId).toBe("g2");
   });
 
+  it("a device joining mid-answer picks up the shared live state and keeps streaming", () => {
+    const s = run([
+      { type: "ready", client_id: "desk", mic_owner: "phone", revision: 7, committed: "Why Go", interim: " over Rust",
+        model: "m1", length: "short", generation: { gen_id: "g3", revision: 7, provisional: true, question: "Why Go", text: "Because ", done: false } },
+      { type: "token", gen_id: "g3", delta: "it is simple." },
+    ]);
+    expect(s.answer).toBe("Because it is simple.");
+    expect(s.micOwner).toBe("phone");
+    expect(s.clientId).toBe("desk");
+    expect(s.transcriptRevision).toBe(7);
+  });
+
   it("final answer_end appends history and clears transcript", () => {
     const s = run([
       { type: "transcript", revision: 1, committed: "Why Go?", interim: "" },
