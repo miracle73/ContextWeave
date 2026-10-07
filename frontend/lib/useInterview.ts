@@ -112,6 +112,8 @@ export function useInterview(chatId: string, onSourcesChanged?: () => void) {
           else if (e.error !== "no-speech" && e.error !== "aborted") setMicError(`Speech recognition error: ${e.error}`);
         };
         rec.onend = () => { if (listening.current) try { rec.start(); } catch { /* restarting */ } };
+        // Claim the shared mic for this device; the server ignores transcripts from non-owners.
+        if (!send({ type: "start_audio" })) throw new Error("Not connected to the server");
         media.current.speech = rec;
         listening.current = true;
         rec.start();
