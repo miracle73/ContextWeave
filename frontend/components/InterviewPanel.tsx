@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { AppConfig } from "@/lib/api";
-import { useInterview } from "@/lib/useInterview";
+import { useInterview, type AudioSource } from "@/lib/useInterview";
 
 const dot: Record<string, string> = {
   open: "bg-emerald-500", listening: "bg-emerald-500 animate-pulse", streaming: "bg-indigo-500 animate-pulse",
@@ -24,6 +24,8 @@ export function InterviewPanel({ chatId, config, onSourcesChanged }: { chatId: s
   const { state: s } = iv;
   const [consent, setConsent] = useState(false);
   const [text, setText] = useState("");
+  const canTab = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia;
+  const [source, setSource] = useState<AudioSource>("mic");
   // Model and length live on the server, so every device on this chat shares them.
   const model = s.model || config.default_model;
   const length = s.length;
@@ -53,15 +55,23 @@ export function InterviewPanel({ chatId, config, onSourcesChanged }: { chatId: s
             {config.lengths.map((l) => <option key={l}>{l}</option>)}
           </select>
         </label>
+        {canTab && (
+          <label className="text-xs text-slate-500">Listen to
+            <select value={source} onChange={(e) => setSource(e.target.value as AudioSource)} className="mt-1 block w-full rounded-md border border-slate-300 px-2 py-2 text-sm text-slate-900 sm:w-auto">
+              <option value="mic">My microphone</option>
+              <option value="tab">Call tab (friend on Meet/Zoom)</option>
+            </select>
+          </label>
+        )}
         <label className="col-span-2 flex items-start gap-2 text-xs text-slate-600 sm:max-w-xs">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-0.5" />
-          Everyone in this mock interview has consented to being recorded and transcribed.
+          Everyone in this mock interview, including anyone on the call, has consented to being recorded and transcribed.
         </label>
         <div className="col-span-2 flex gap-2 sm:ml-auto">
           {!listening ? (
-            <button onClick={iv.startMic} disabled={!consent || iv.conn !== "open" || iv.mic === "requesting" || micElsewhere}
+            <button onClick={() => iv.startMic(source)} disabled={!consent || iv.conn !== "open" || iv.mic === "requesting" || micElsewhere}
               className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 text-sm font-medium text-white disabled:opacity-40 sm:flex-none sm:py-2">
-              {micElsewhere ? "Mic live on another device" : "🎙 Start mic"}</button>
+              {micElsewhere ? "Mic live on another device" : source === "tab" ? "🎧 Capture call tab" : "🎙 Start mic"}</button>
           ) : (
             <button onClick={iv.stopMic} className="flex-1 rounded-lg bg-red-600 px-4 py-3 text-sm font-medium text-white sm:flex-none sm:py-2">■ Stop</button>
           )}

@@ -5,6 +5,7 @@ import { WS_URL } from "./api";
 import { initialState, reduce } from "./interviewState";
 
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
+export type AudioSource = "mic" | "tab";
 export type MicState = "idle" | "requesting" | "listening" | "denied" | "error" | "unsupported";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,12 +81,17 @@ export function useInterview(chatId: string, onSourcesChanged?: () => void) {
     };
   }, [chatId, send, stopMic]);
 
-  const startMic = useCallback(async () => {
+  const startMic = useCallback(async (source: AudioSource = "mic") => {
     setMicError(null);
     if (!navigator.mediaDevices?.getUserMedia) { setMic("unsupported"); setMicError("Microphone not available in this browser."); return; }
+    if (source === "tab" && sttProvider !== "deepgram") {
+      setMic("error");
+      setMicError("Call-tab audio needs server-side transcription: set STT_PROVIDER=deepgram and DEEPGRAM_API_KEY on the backend.");
+      return;
+    }
     setMic("requesting");
     try {
-      if (sttProvider === "browser") {
+      if (source === "mic" && sttProvider === "browser") {
         const SR = (window as SpeechRec).SpeechRecognition ?? (window as SpeechRec).webkitSpeechRecognition;
         if (!SR) { setMic("unsupported"); setMicError("Browser speech recognition unsupported (use Chrome/Edge) or configure Deepgram."); return; }
         // Ask permission explicitly so denial is reported clearly.
@@ -118,7 +124,22 @@ export function useInterview(chatId: string, onSourcesChanged?: () => void) {
         listening.current = true;
         rec.start();
       } else {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        let stream: MediaStream;
+        if (source === "tab") {
+          // Chrome requires video in the picker; we keep only the shared tab's audio (the friend on the call).
+          const shared = await navigator.mediaDevices.getDisplayMedia({
+            video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+            // @ts-expect-error Chrome-only picker hints
+            preferCurrentTab: false, selfBrowserSurface: "exclude", systemAudio: "include",
+          });
+          shared.getVideoTracks().forEach((t) => t.stop());
+          const audio = shared.getAudioTracks();
+          if (!audio.length) throw new DOMException("No audio shared. Pick the call's tab and turn on \"Share tab audio\".", "NoAudio");
+          audio[0].onended = () => stopMic(true); // user pressed Chrome's "Stop sharing"
+          stream = new MediaStream(audio);
+        } else {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        }
         const mime = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t));
         const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
         if (!send({ type: "start_audio" })) throw new Error("Not connected to the server");
@@ -131,11 +152,13 @@ export function useInterview(chatId: string, onSourcesChanged?: () => void) {
     } catch (e) {
       const err = e as DOMException;
       listening.current = false;
-      if (err.name === "NotAllowedError" || err.name === "SecurityError") { setMic("denied"); setMicError("Microphone permission denied. Allow it in your browser's site settings."); }
+      if (source === "tab" && err.name === "NotAllowedError") { setMic("idle"); setMicError("Tab sharing was cancelled."); }
+      else if (err.name === "NoAudio") { setMic("error"); setMicError(err.message); }
+      else if (err.name === "NotAllowedError" || err.name === "SecurityError") { setMic("denied"); setMicError("Microphone permission denied. Allow it in your browser's site settings."); }
       else if (err.name === "NotFoundError") { setMic("error"); setMicError("No microphone found."); }
       else { setMic("error"); setMicError(err.message || "Could not start microphone."); }
     }
-  }, [send, sttProvider]);
+  }, [send, sttProvider, stopMic]);
 
   return {
     state, conn, mic, micError, sttProvider, startMic, stopMic: () => stopMic(true),
