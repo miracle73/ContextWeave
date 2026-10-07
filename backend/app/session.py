@@ -220,6 +220,7 @@ class InterviewSession:
     async def _finalise(self, gen: Generation) -> None:
         self.active = None
         self.chat.history.append(Turn(gen.question, gen.text))
+        self.chat.save()
         await self.send({"type": "answer_end", "gen_id": gen.id, "final": True, "text": gen.text,
                          "question": gen.question})
 

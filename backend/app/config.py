@@ -29,6 +29,8 @@ class Settings:
         self.debounce_ms = int(os.getenv("DEBOUNCE_MS", "700"))
         self.max_provisional_per_utterance = int(os.getenv("MAX_PROVISIONAL_PER_UTTERANCE", "3"))
         self.generations_per_minute = int(os.getenv("GENERATIONS_PER_MINUTE", "20"))
+        # Optional persistence: postgresql://... (e.g. Neon) or sqlite:///chats.db. Empty = in-memory.
+        self.database_url = os.getenv("DATABASE_URL", "")
         self.max_upload_mb = int(os.getenv("MAX_UPLOAD_MB", "10"))
 
 

@@ -34,6 +34,11 @@ class Sources(BaseModel):
     repos: list[str] = Field(default_factory=list, max_length=10)
 
 
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
 @app.get("/api/config")
 def config():
     return {"models": settings.models, "default_model": settings.default_model, "lengths": list(LENGTHS),
